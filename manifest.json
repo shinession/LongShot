@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Longshot Capture",
+  "version": "1.0.0",
+  "description": "Capture a scrolling page and stitch the screenshots into a single long image.",
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "offscreen",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Longshot Capture"
+  }
+}
