@@ -54,6 +54,11 @@ async function captureFullPage(tabId, format) {
   let lastCaptureTimestamp = 0;
 
   try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: preparePageForCapture,
+    });
+
     for (let index = 0; index < scrollStops.length; index += 1) {
       const requestedScrollY = scrollStops[index];
       const progress = `Capturing frame ${index + 1} of ${scrollStops.length}...`;
@@ -82,6 +87,11 @@ async function captureFullPage(tabId, format) {
       });
     }
   } finally {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: restorePageAfterCapture,
+    });
+
     await chrome.scripting.executeScript({
       target: { tabId },
       func: restoreScrollPosition,
@@ -177,13 +187,18 @@ function buildScrollStops(totalHeight, viewportHeight) {
     return [0];
   }
 
-  const stops = new Set();
+  const overlap = Math.min(150, Math.floor(viewportHeight * 0.15));
+  const step = viewportHeight - overlap;
+  const stops = [];
 
-  for (let current = 0; current < totalHeight; current += viewportHeight) {
-    stops.add(Math.max(0, Math.min(current, totalHeight - viewportHeight)));
+  for (let current = 0; current < totalHeight - viewportHeight; current += step) {
+    stops.push(current);
   }
 
-  return [...stops];
+  // Always include the final position that shows the bottom of the page
+  stops.push(totalHeight - viewportHeight);
+
+  return stops;
 }
 
 function isRestrictedUrl(url) {
@@ -246,4 +261,79 @@ async function scrollToPosition(targetScrollY, delayMs) {
 
 function restoreScrollPosition(scrollX, scrollY) {
   window.scrollTo(scrollX, scrollY);
+}
+
+function preparePageForCapture() {
+  const STYLE_ID = "__longshot_capture_style__";
+  const MARK_ATTR = "data-longshot-hidden";
+  const root = document.documentElement;
+
+  if (!document.getElementById(STYLE_ID)) {
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = `
+      [${MARK_ATTR}="true"] {
+        visibility: hidden !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  if (!root.hasAttribute("data-longshot-prev-scroll-behavior")) {
+    root.setAttribute(
+      "data-longshot-prev-scroll-behavior",
+      root.style.scrollBehavior || ""
+    );
+  }
+  root.style.scrollBehavior = "auto";
+
+  const viewportHeight = window.innerHeight;
+  const elements = document.body ? document.body.querySelectorAll("*") : [];
+  for (const element of elements) {
+    const style = window.getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden") {
+      continue;
+    }
+
+    if (style.position !== "fixed" && style.position !== "sticky") {
+      continue;
+    }
+
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      continue;
+    }
+
+    if (rect.height >= viewportHeight * 0.9) {
+      continue;
+    }
+
+    element.setAttribute(MARK_ATTR, "true");
+  }
+}
+
+function restorePageAfterCapture() {
+  const STYLE_ID = "__longshot_capture_style__";
+  const MARK_ATTR = "data-longshot-hidden";
+  const root = document.documentElement;
+
+  for (const element of document.querySelectorAll(`[${MARK_ATTR}]`)) {
+    element.removeAttribute(MARK_ATTR);
+  }
+
+  const prevScrollBehavior = root.getAttribute("data-longshot-prev-scroll-behavior");
+  if (prevScrollBehavior === null) {
+    root.style.removeProperty("scroll-behavior");
+  } else if (prevScrollBehavior) {
+    root.style.scrollBehavior = prevScrollBehavior;
+    root.removeAttribute("data-longshot-prev-scroll-behavior");
+  } else {
+    root.style.removeProperty("scroll-behavior");
+    root.removeAttribute("data-longshot-prev-scroll-behavior");
+  }
+
+  const style = document.getElementById(STYLE_ID);
+  if (style) {
+    style.remove();
+  }
 }

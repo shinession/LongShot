@@ -1,6 +1,7 @@
 const canvas = document.getElementById("stitchCanvas");
 let context = canvas.getContext("2d", { alpha: false });
 const MAX_SEGMENT_HEIGHT = 2000;
+const CAPTURE_BOTTOM_CROP_PX = 8;
 
 // --- CRC32 for PNG chunk validation ---
 const crcTable = new Uint32Array(256);
@@ -64,6 +65,18 @@ async function stitchAndDownload({ captures, metrics, format }) {
     const scale = bitmaps[0].bitmap.height / metrics.viewportHeight;
     const outputWidth = bitmaps[0].bitmap.width;
     const outputHeight = Math.round(metrics.totalHeight * scale);
+    const frames = bitmaps.map(({ bitmap, scrollY }, index) => {
+      const cropBottom =
+        index < bitmaps.length - 1
+          ? Math.min(CAPTURE_BOTTOM_CROP_PX, Math.max(0, bitmap.height - 1))
+          : 0;
+
+      return {
+        bitmap,
+        destY: Math.floor(scrollY * scale),
+        drawHeight: bitmap.height - cropBottom,
+      };
+    });
 
     if (outputWidth <= 0 || outputHeight <= 0) {
       throw new Error("Invalid image dimensions.");
@@ -73,32 +86,29 @@ async function stitchAndDownload({ captures, metrics, format }) {
     function renderSegment(segStartY, segHeight) {
       canvas.width = outputWidth;
       canvas.height = segHeight;
-      // Re-acquire context after dimension change to avoid stale state
       context = canvas.getContext("2d", { alpha: false });
-      context.clearRect(0, 0, outputWidth, segHeight);
-      context.imageSmoothingEnabled = false;
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, outputWidth, segHeight);
 
-      for (const { bitmap, scrollY } of bitmaps) {
-        const destY = Math.round(scrollY * scale);
-        const overlapStart = Math.max(destY, segStartY);
-        const overlapEnd = Math.min(destY + bitmap.height, segStartY + segHeight);
-        if (overlapEnd <= overlapStart) continue;
+      for (const { bitmap, destY, drawHeight } of frames) {
+        if (destY >= segStartY + segHeight || destY + drawHeight <= segStartY) {
+          continue;
+        }
 
         context.drawImage(
           bitmap,
           0,
-          overlapStart - destY,
-          bitmap.width,
-          overlapEnd - overlapStart,
           0,
-          overlapStart - segStartY,
+          bitmap.width,
+          drawHeight,
+          0,
+          destY - segStartY,
           outputWidth,
-          overlapEnd - overlapStart
+          drawHeight
         );
       }
 
-      const imageData = context.getImageData(0, 0, outputWidth, segHeight);
-      return imageData.data;
+      return context.getImageData(0, 0, outputWidth, segHeight).data;
     }
 
     if (format === "pdf") {
