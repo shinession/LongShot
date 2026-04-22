@@ -18,7 +18,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  activeCapture = captureFullPage(message.tabId, message.format || "png")
+  activeCapture = captureFullPage(message.tabId, message.format || "png", {
+    disableJs: Boolean(message.disableJs),
+  })
     .then((result) => {
       sendResponse(result);
     })
@@ -34,12 +36,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-async function captureFullPage(tabId, format) {
+async function captureFullPage(tabId, format, options = {}) {
   const tab = await chrome.tabs.get(tabId);
 
   if (isRestrictedUrl(tab.url)) {
     throw new Error("This page cannot be captured by a Chrome extension.");
   }
+
+  if (options.disableJs) {
+    return captureFullPageWithDebugger(tab, format);
+  }
+
+  return captureFullPageWithScripting(tab, format);
+}
+
+async function captureFullPageWithScripting(tab, format) {
+  const tabId = tab.id;
 
   await notifyPopup({ type: "capture-progress", text: "Reading page metrics..." });
 
@@ -123,6 +135,118 @@ async function captureFullPage(tabId, format) {
   return { ok: true, message: successMessage };
 }
 
+async function captureFullPageWithDebugger(tab, format) {
+  const tabId = tab.id;
+  const debuggee = { tabId };
+  let debuggerAttached = false;
+
+  await notifyPopup({
+    type: "capture-progress",
+    text: "Reading page metrics...",
+  });
+
+  const [{ result: metrics }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: readPageMetrics,
+  });
+
+  const scrollStops = buildScrollStops(metrics.totalHeight, metrics.viewportHeight);
+  const captures = [];
+  let lastScrollY = -1;
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: preparePageForCapture,
+    });
+
+    await notifyPopup({
+      type: "capture-progress",
+      text: "Attaching debugger...",
+    });
+
+    try {
+      await chrome.debugger.attach(debuggee, "1.3");
+      debuggerAttached = true;
+    } catch {
+      throw new Error("Unable to enable JS-disabled capture. Close DevTools for this tab and try again.");
+    }
+
+    await chrome.debugger.sendCommand(debuggee, "Page.enable");
+    await chrome.debugger.sendCommand(debuggee, "Page.bringToFront");
+    await trySendDebuggerCommand(debuggee, "Emulation.setScrollbarsHidden", {
+      hidden: true,
+    });
+    await chrome.debugger.sendCommand(debuggee, "Emulation.setScriptExecutionDisabled", {
+      value: true,
+    });
+
+    for (let index = 0; index < scrollStops.length; index += 1) {
+      const requestedScrollY = scrollStops[index];
+      await notifyPopup({
+        type: "capture-progress",
+        text: `Capturing frame ${index + 1} of ${scrollStops.length}...`,
+      });
+
+      const scrollY = await scrollToPositionWithDebugger(debuggee, requestedScrollY);
+      if (scrollY === lastScrollY) {
+        continue;
+      }
+
+      lastScrollY = scrollY;
+      const { data } = await chrome.debugger.sendCommand(
+        debuggee,
+        "Page.captureScreenshot",
+        {
+          format: "png",
+          fromSurface: true,
+          optimizeForSpeed: true,
+        }
+      );
+
+      captures.push({
+        dataUrl: `data:image/png;base64,${data}`,
+        scrollY,
+      });
+    }
+  } finally {
+    if (debuggerAttached) {
+      await trySendDebuggerCommand(debuggee, "Emulation.setScriptExecutionDisabled", {
+        value: false,
+      });
+      await trySendDebuggerCommand(debuggee, "Emulation.setScrollbarsHidden", {
+        hidden: false,
+      });
+      await detachDebuggerSafely(debuggee);
+    }
+
+    await restorePageState(tabId, metrics.originalScrollX, metrics.originalScrollY);
+  }
+
+  if (!captures.length) {
+    throw new Error("No frames were captured.");
+  }
+
+  await notifyPopup({ type: "capture-progress", text: "Stitching frames..." });
+
+  const ext = format.startsWith("pdf") ? "pdf" : "png";
+  const filename = createFileName(tab.title, ext);
+  const result = await stitchAndDownload({ captures, metrics, format });
+
+  await notifyPopup({ type: "capture-progress", text: "Downloading image..." });
+
+  await chrome.downloads.download({
+    url: result.blobUrl,
+    filename,
+    saveAs: true,
+  });
+
+  const successMessage = `Saved ${filename}`;
+  await notifyPopup({ type: "capture-finished", text: successMessage });
+
+  return { ok: true, message: successMessage };
+}
+
 async function waitForCaptureQuota(lastCaptureTimestamp) {
   const now = Date.now();
   const elapsed = now - lastCaptureTimestamp;
@@ -138,6 +262,83 @@ function delay(durationMs) {
   return new Promise((resolve) => {
     setTimeout(resolve, durationMs);
   });
+}
+
+async function scrollToPositionWithDebugger(debuggee, targetScrollY) {
+  const before = await getDebuggerPageMetrics(debuggee);
+  const viewportWidth = Math.max(1, Math.floor(before.viewportWidth));
+  const viewportHeight = Math.max(1, Math.floor(before.viewportHeight));
+  const maxScrollY = Math.max(0, before.totalHeight - before.viewportHeight);
+  const boundedScrollY = Math.max(0, Math.min(targetScrollY, maxScrollY));
+  const deltaY = boundedScrollY - before.scrollY;
+
+  if (Math.abs(deltaY) < 1) {
+    return before.scrollY;
+  }
+
+  await chrome.debugger.sendCommand(debuggee, "Input.synthesizeScrollGesture", {
+    x: Math.floor(viewportWidth / 2),
+    y: Math.floor(viewportHeight / 2),
+    yDistance: -deltaY,
+    preventFling: true,
+    speed: Math.max(800, Math.min(3000, Math.ceil(Math.abs(deltaY) * 3))),
+    gestureSourceType: "mouse",
+  });
+
+  await delay(SCROLL_SETTLE_DELAY_MS);
+
+  const after = await getDebuggerPageMetrics(debuggee);
+  return after.scrollY;
+}
+
+async function getDebuggerPageMetrics(debuggee) {
+  const metrics = await chrome.debugger.sendCommand(debuggee, "Page.getLayoutMetrics");
+
+  return {
+    totalHeight: Math.ceil(metrics.cssContentSize?.height || 0),
+    viewportWidth: Math.ceil(metrics.cssLayoutViewport?.clientWidth || 0),
+    viewportHeight: Math.ceil(metrics.cssLayoutViewport?.clientHeight || 0),
+    scrollY: Math.round(
+      metrics.cssVisualViewport?.pageY ?? metrics.cssLayoutViewport?.pageY ?? 0
+    ),
+  };
+}
+
+async function trySendDebuggerCommand(debuggee, method, commandParams) {
+  try {
+    return await chrome.debugger.sendCommand(debuggee, method, commandParams);
+  } catch {
+    return undefined;
+  }
+}
+
+async function detachDebuggerSafely(debuggee) {
+  try {
+    await chrome.debugger.detach(debuggee);
+  } catch {
+    // Ignore detach failures when the tab closed or the debugger was already released.
+  }
+}
+
+async function restorePageState(tabId, scrollX, scrollY) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: restorePageAfterCapture,
+    });
+  } catch {
+    // Ignore when the tab navigated or closed while capturing.
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: restoreScrollPosition,
+      args: [scrollX, scrollY],
+    });
+  } catch {
+    // Ignore when the tab navigated or closed while capturing.
+  }
 }
 
 async function stitchAndDownload(payload) {

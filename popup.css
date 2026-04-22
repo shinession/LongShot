@@ -16,6 +16,7 @@
 
 body {
   width: 360px;
+  min-height: 600px;
   margin: 0;
   padding: 18px;
   font-family: "Segoe UI", "Helvetica Neue", sans-serif;
@@ -115,6 +116,44 @@ h1 {
   box-shadow: 0 10px 24px rgba(17, 94, 89, 0.18);
 }
 
+.capture-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 12px 13px;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 14px;
+  background: rgba(15, 118, 110, 0.06);
+  cursor: pointer;
+}
+
+.capture-toggle-input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.capture-toggle-body {
+  display: grid;
+  gap: 2px;
+}
+
+.capture-toggle-title {
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.capture-toggle-meta {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
 .capture-button {
   width: 100%;
   border: 0;
@@ -141,7 +180,7 @@ h1 {
 }
 
 .status {
-  min-height: 40px;
+  min-height: 30px;
   margin: 16px 0 0;
   font-size: 12px;
   line-height: 1.5;

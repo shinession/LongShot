@@ -1,5 +1,6 @@
 const captureButton = document.getElementById("captureButton");
 const statusElement = document.getElementById("status");
+const disableJsToggle = document.getElementById("disableJsToggle");
 const formatButtons = document.querySelectorAll(".format-btn");
 
 let isRunning = false;
@@ -50,6 +51,7 @@ captureButton.addEventListener("click", async () => {
       type: "capture-full-page",
       tabId: tab.id,
       format: selectedFormat,
+      disableJs: Boolean(disableJsToggle?.checked),
     });
 
     setStatus(result?.message || "Capture completed.");
