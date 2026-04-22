@@ -95,29 +95,18 @@ async function captureFullPage(tabId) {
 
   await notifyPopup({ type: "capture-progress", text: "Stitching frames..." });
 
-  const stitchedParts = await stitchCaptures({ captures, metrics });
-  const downloadedFiles = [];
+  const filename = createFileName(tab.title);
+  const result = await stitchAndDownload({ captures, metrics });
 
-  for (const part of stitchedParts) {
-    const filename = createFileName(tab.title, part.index, part.totalParts);
-    await notifyPopup({
-      type: "capture-progress",
-      text: `Downloading image ${part.index} of ${part.totalParts}...`,
-    });
+  await notifyPopup({ type: "capture-progress", text: "Downloading image..." });
 
-    await chrome.downloads.download({
-      url: part.dataUrl,
-      filename,
-      saveAs: stitchedParts.length === 1,
-    });
+  await chrome.downloads.download({
+    url: result.blobUrl,
+    filename,
+    saveAs: true,
+  });
 
-    downloadedFiles.push(filename);
-  }
-
-  const successMessage =
-    stitchedParts.length === 1
-      ? `Saved ${downloadedFiles[0]}`
-      : `Saved ${downloadedFiles.length} image files.`;
+  const successMessage = `Saved ${filename}`;
   await notifyPopup({ type: "capture-finished", text: successMessage });
 
   return { ok: true, message: successMessage };
@@ -140,11 +129,11 @@ function delay(durationMs) {
   });
 }
 
-async function stitchCaptures(payload) {
+async function stitchAndDownload(payload) {
   await ensureOffscreenDocument();
 
   const response = await chrome.runtime.sendMessage({
-    type: "stitch-captures",
+    type: "stitch-and-download",
     payload,
   });
 
@@ -152,7 +141,7 @@ async function stitchCaptures(payload) {
     throw new Error(response?.message || "Unable to stitch captured frames.");
   }
 
-  return response.parts;
+  return response;
 }
 
 async function ensureOffscreenDocument() {
@@ -208,7 +197,7 @@ async function notifyPopup(message) {
   }
 }
 
-function createFileName(title, partIndex = 1, totalParts = 1) {
+function createFileName(title) {
   const safeTitle = (title || "page")
     .trim()
     .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "-")
@@ -216,8 +205,7 @@ function createFileName(title, partIndex = 1, totalParts = 1) {
     .slice(0, 80);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const partSuffix = totalParts > 1 ? `-part-${String(partIndex).padStart(2, "0")}` : "";
-  return `longshot-${safeTitle || "page"}-${stamp}${partSuffix}.png`;
+  return `longshot-${safeTitle || "page"}-${stamp}.png`;
 }
 
 function readPageMetrics() {

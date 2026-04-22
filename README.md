@@ -22,5 +22,5 @@ This folder contains a Chrome extension that can:
 ## Notes
 
 - Restricted pages such as `chrome://` pages cannot be captured.
-- Very large pages are automatically split into multiple PNG files instead of failing on the canvas height limit.
+- Very large pages (e.g. 200+ pages) are stitched into a single PNG using streaming compression to bypass the browser canvas height limit.
 - Sticky headers and floating elements are captured exactly as they appear while scrolling.
