@@ -111,8 +111,14 @@ async function stitchAndDownload({ captures, metrics, format }) {
       return context.getImageData(0, 0, outputWidth, segHeight).data;
     }
 
-    if (format === "pdf") {
-      const pdfBlob = await buildPdf(outputWidth, outputHeight, renderSegment);
+    if (format === "pdf-multi") {
+      const pdfBlob = await buildMultiPagePdf(outputWidth, outputHeight, renderSegment);
+      const blobUrl = URL.createObjectURL(pdfBlob);
+      return { blobUrl };
+    }
+
+    if (format === "pdf-single") {
+      const pdfBlob = await buildSinglePagePdf(outputWidth, outputHeight, renderSegment);
       const blobUrl = URL.createObjectURL(pdfBlob);
       return { blobUrl };
     }
@@ -196,10 +202,9 @@ async function buildPng(width, height, renderSegment) {
   );
 }
 
-// --- PDF builder: multi-page, one image per page, each independently compressed ---
-async function buildPdf(width, height, renderSegment) {
+// --- PDF builder: single tall page composed of independently compressed image strips ---
+async function buildSinglePagePdf(width, height, renderSegment) {
   const PX_TO_PT = 72 / 96;
-  const pageW = Math.round(width * PX_TO_PT);
   const segMaxH = Math.min(MAX_SEGMENT_HEIGHT, height);
 
   // Pre-render each segment → compress RGB independently
@@ -217,19 +222,24 @@ async function buildPdf(width, height, renderSegment) {
     }
 
     const compressed = await deflateBytes(rgb);
-    segments.push({ segH, compressed });
+    segments.push({ startY: y, segH, compressed });
   }
 
-  const pageCount = segments.length;
+  const pageWPt = Math.max(1, width * PX_TO_PT);
+  const pageHPt = Math.max(1, height * PX_TO_PT);
+  const maxPdfUnits = 14400;
+  const userUnit = Math.max(1, Math.ceil(Math.max(pageWPt, pageHPt) / maxPdfUnits));
+  const mediaBoxW = pageWPt / userUnit;
+  const mediaBoxH = pageHPt / userUnit;
 
   // PDF object layout:
   //   1 = Catalog
   //   2 = Pages
-  //   For each page i (0-based):
-  //     3 + i*3     = Page
-  //     3 + i*3 + 1 = Contents stream
-  //     3 + i*3 + 2 = Image XObject
-  const totalObjects = 2 + pageCount * 3;
+  //   3 = Page
+  //   4 = Contents stream
+  //   5... = Image XObjects
+  const firstImageId = 5;
+  const totalObjects = 4 + segments.length;
 
   const enc = new TextEncoder();
   const parts = [];
@@ -260,34 +270,39 @@ async function buildPdf(width, height, renderSegment) {
   write("<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
 
   // 2 - Pages
-  const kids = segments.map((_, i) => `${3 + i * 3} 0 R`).join(" ");
   objStart(2);
-  write(`<< /Type /Pages /Kids [${kids}] /Count ${pageCount} >>\nendobj\n`);
+  write("<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
 
-  // Each page
-  for (let i = 0; i < pageCount; i++) {
-    const seg = segments[i];
-    const pageHPt = Math.round(seg.segH * PX_TO_PT);
-    const pageObjId = 3 + i * 3;
-    const contentsId = pageObjId + 1;
-    const imageId = pageObjId + 2;
+  const xObjectEntries = segments
+    .map((_, index) => `/Img${index} ${firstImageId + index} 0 R`)
+    .join(" ");
 
-    // Page object
-    objStart(pageObjId);
-    write(
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW} ${pageHPt}] ` +
-        `/Contents ${contentsId} 0 R ` +
-        `/Resources << /XObject << /Img ${imageId} 0 R >> >> >>\nendobj\n`
-    );
+  // 3 - Single tall page
+  objStart(3);
+  write(
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${mediaBoxW} ${mediaBoxH}] ` +
+      (userUnit > 1 ? `/UserUnit ${userUnit} ` : "") +
+      `/Contents 4 0 R /Resources << /XObject << ${xObjectEntries} >> >> >>\nendobj\n`
+  );
 
-    // Contents stream
-    const contentStr = `q ${pageW} 0 0 ${pageHPt} 0 0 cm /Img Do Q\n`;
-    objStart(contentsId);
-    write(`<< /Length ${contentStr.length} >>\nstream\n`);
-    write(contentStr);
-    write("endstream\nendobj\n");
+  // 4 - Contents stream for all strips on one page
+  const contentStr = segments
+    .map((seg, index) => {
+      const drawW = pageWPt / userUnit;
+      const drawH = (seg.segH * PX_TO_PT) / userUnit;
+      const drawY = ((height - (seg.startY + seg.segH)) * PX_TO_PT) / userUnit;
+      return `q ${drawW} 0 0 ${drawH} 0 ${drawY} cm /Img${index} Do Q`;
+    })
+    .join("\n") + "\n";
+  objStart(4);
+  write(`<< /Length ${contentStr.length} >>\nstream\n`);
+  write(contentStr);
+  write("endstream\nendobj\n");
 
-    // Image XObject
+  // 5... - Image XObjects
+  for (let index = 0; index < segments.length; index += 1) {
+    const seg = segments[index];
+    const imageId = firstImageId + index;
     objStart(imageId);
     write(
       `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${seg.segH} ` +
@@ -304,6 +319,108 @@ async function buildPdf(width, height, renderSegment) {
   write(`0 ${totalObjects + 1}\n`);
   write("0000000000 65535 f \n");
   for (let i = 1; i <= totalObjects; i++) {
+    write(`${String(offsets[i]).padStart(10, "0")} 00000 n \n`);
+  }
+
+  write("trailer\n");
+  write(`<< /Size ${totalObjects + 1} /Root 1 0 R >>\n`);
+  write("startxref\n");
+  write(`${xrefPos}\n`);
+  write("%%EOF\n");
+
+  return new Blob(parts, { type: "application/pdf" });
+}
+
+// --- PDF builder: multiple pages, one image strip per page ---
+async function buildMultiPagePdf(width, height, renderSegment) {
+  const PX_TO_PT = 72 / 96;
+  const pageW = Math.round(width * PX_TO_PT);
+  const segMaxH = Math.min(MAX_SEGMENT_HEIGHT, height);
+
+  const segments = [];
+  for (let y = 0; y < height; y += segMaxH) {
+    const segH = Math.min(segMaxH, height - y);
+    const rgba = renderSegment(y, segH);
+
+    const rgb = new Uint8Array(width * segH * 3);
+    for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+      rgb[j] = rgba[i];
+      rgb[j + 1] = rgba[i + 1];
+      rgb[j + 2] = rgba[i + 2];
+    }
+
+    const compressed = await deflateBytes(rgb);
+    segments.push({ segH, compressed });
+  }
+
+  const pageCount = segments.length;
+  const totalObjects = 2 + pageCount * 3;
+
+  const enc = new TextEncoder();
+  const parts = [];
+  const offsets = new Array(totalObjects + 1);
+  let pos = 0;
+
+  function write(str) {
+    const bytes = enc.encode(str);
+    parts.push(bytes);
+    pos += bytes.length;
+  }
+
+  function writeBin(bytes) {
+    parts.push(bytes);
+    pos += bytes.length;
+  }
+
+  function objStart(id) {
+    offsets[id] = pos;
+    write(`${id} 0 obj\n`);
+  }
+
+  write("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+
+  objStart(1);
+  write("<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+  const kids = segments.map((_, index) => `${3 + index * 3} 0 R`).join(" ");
+  objStart(2);
+  write(`<< /Type /Pages /Kids [${kids}] /Count ${pageCount} >>\nendobj\n`);
+
+  for (let index = 0; index < pageCount; index += 1) {
+    const seg = segments[index];
+    const pageHPt = Math.round(seg.segH * PX_TO_PT);
+    const pageObjId = 3 + index * 3;
+    const contentsId = pageObjId + 1;
+    const imageId = pageObjId + 2;
+
+    objStart(pageObjId);
+    write(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW} ${pageHPt}] ` +
+        `/Contents ${contentsId} 0 R ` +
+        `/Resources << /XObject << /Img ${imageId} 0 R >> >> >>\nendobj\n`
+    );
+
+    const contentStr = `q ${pageW} 0 0 ${pageHPt} 0 0 cm /Img Do Q\n`;
+    objStart(contentsId);
+    write(`<< /Length ${contentStr.length} >>\nstream\n`);
+    write(contentStr);
+    write("endstream\nendobj\n");
+
+    objStart(imageId);
+    write(
+      `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${seg.segH} ` +
+        `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode ` +
+        `/Length ${seg.compressed.length} >>\nstream\n`
+    );
+    writeBin(seg.compressed);
+    write("\nendstream\nendobj\n");
+  }
+
+  const xrefPos = pos;
+  write("xref\n");
+  write(`0 ${totalObjects + 1}\n`);
+  write("0000000000 65535 f \n");
+  for (let i = 1; i <= totalObjects; i += 1) {
     write(`${String(offsets[i]).padStart(10, "0")} 00000 n \n`);
   }
 

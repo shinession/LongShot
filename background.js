@@ -105,7 +105,7 @@ async function captureFullPage(tabId, format) {
 
   await notifyPopup({ type: "capture-progress", text: "Stitching frames..." });
 
-  const ext = format === "pdf" ? "pdf" : "png";
+  const ext = format.startsWith("pdf") ? "pdf" : "png";
   const filename = createFileName(tab.title, ext);
   const result = await stitchAndDownload({ captures, metrics, format });
 
