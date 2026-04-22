@@ -11,8 +11,16 @@
       <p class="eyebrow">Chrome Extension</p>
       <h1>Longshot Capture</h1>
       <p class="intro">
-        Capture the current page by scrolling the viewport, then stitch every frame into one long PNG.
+        Capture the current page by scrolling the viewport, then stitch every frame into one long image.
       </p>
+
+      <div class="format-row">
+        <label class="format-label">Format</label>
+        <div class="format-options">
+          <button class="format-btn active" data-format="png" type="button">PNG</button>
+          <button class="format-btn" data-format="pdf" type="button">PDF</button>
+        </div>
+      </div>
 
       <button id="captureButton" class="capture-button" type="button">
         Capture full page

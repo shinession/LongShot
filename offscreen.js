@@ -46,7 +46,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // --- Main entry ---
-async function stitchAndDownload({ captures, metrics }) {
+async function stitchAndDownload({ captures, metrics, format }) {
   const bitmaps = await Promise.all(
     captures.map(async ({ dataUrl, scrollY }) => {
       const resp = await fetch(dataUrl);
@@ -101,7 +101,14 @@ async function stitchAndDownload({ captures, metrics }) {
       return imageData.data;
     }
 
+    if (format === "pdf") {
+      const pdfBlob = await buildPdf(outputWidth, outputHeight, renderSegment);
+      const blobUrl = URL.createObjectURL(pdfBlob);
+      return { blobUrl };
+    }
+
     const pngBlob = await buildPng(outputWidth, outputHeight, renderSegment);
+
     const blobUrl = URL.createObjectURL(pngBlob);
 
     // blobUrl will be revoked by background.js after download completes
@@ -177,4 +184,129 @@ async function buildPng(width, height, renderSegment) {
     ],
     { type: "image/png" }
   );
+}
+
+// --- PDF builder: multi-page, one image per page, each independently compressed ---
+async function buildPdf(width, height, renderSegment) {
+  const PX_TO_PT = 72 / 96;
+  const pageW = Math.round(width * PX_TO_PT);
+  const segMaxH = Math.min(MAX_SEGMENT_HEIGHT, height);
+
+  // Pre-render each segment → compress RGB independently
+  const segments = [];
+  for (let y = 0; y < height; y += segMaxH) {
+    const segH = Math.min(segMaxH, height - y);
+    const rgba = renderSegment(y, segH);
+
+    // RGBA → RGB
+    const rgb = new Uint8Array(width * segH * 3);
+    for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+      rgb[j] = rgba[i];
+      rgb[j + 1] = rgba[i + 1];
+      rgb[j + 2] = rgba[i + 2];
+    }
+
+    const compressed = await deflateBytes(rgb);
+    segments.push({ segH, compressed });
+  }
+
+  const pageCount = segments.length;
+
+  // PDF object layout:
+  //   1 = Catalog
+  //   2 = Pages
+  //   For each page i (0-based):
+  //     3 + i*3     = Page
+  //     3 + i*3 + 1 = Contents stream
+  //     3 + i*3 + 2 = Image XObject
+  const totalObjects = 2 + pageCount * 3;
+
+  const enc = new TextEncoder();
+  const parts = [];
+  const offsets = new Array(totalObjects + 1);
+  let pos = 0;
+
+  function write(str) {
+    const bytes = enc.encode(str);
+    parts.push(bytes);
+    pos += bytes.length;
+  }
+
+  function writeBin(bytes) {
+    parts.push(bytes);
+    pos += bytes.length;
+  }
+
+  function objStart(id) {
+    offsets[id] = pos;
+    write(`${id} 0 obj\n`);
+  }
+
+  // Header
+  write("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+
+  // 1 - Catalog
+  objStart(1);
+  write("<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+  // 2 - Pages
+  const kids = segments.map((_, i) => `${3 + i * 3} 0 R`).join(" ");
+  objStart(2);
+  write(`<< /Type /Pages /Kids [${kids}] /Count ${pageCount} >>\nendobj\n`);
+
+  // Each page
+  for (let i = 0; i < pageCount; i++) {
+    const seg = segments[i];
+    const pageHPt = Math.round(seg.segH * PX_TO_PT);
+    const pageObjId = 3 + i * 3;
+    const contentsId = pageObjId + 1;
+    const imageId = pageObjId + 2;
+
+    // Page object
+    objStart(pageObjId);
+    write(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW} ${pageHPt}] ` +
+        `/Contents ${contentsId} 0 R ` +
+        `/Resources << /XObject << /Img ${imageId} 0 R >> >> >>\nendobj\n`
+    );
+
+    // Contents stream
+    const contentStr = `q ${pageW} 0 0 ${pageHPt} 0 0 cm /Img Do Q\n`;
+    objStart(contentsId);
+    write(`<< /Length ${contentStr.length} >>\nstream\n`);
+    write(contentStr);
+    write("endstream\nendobj\n");
+
+    // Image XObject
+    objStart(imageId);
+    write(
+      `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${seg.segH} ` +
+        `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode ` +
+        `/Length ${seg.compressed.length} >>\nstream\n`
+    );
+    writeBin(seg.compressed);
+    write("\nendstream\nendobj\n");
+  }
+
+  // xref
+  const xrefPos = pos;
+  write("xref\n");
+  write(`0 ${totalObjects + 1}\n`);
+  write("0000000000 65535 f \n");
+  for (let i = 1; i <= totalObjects; i++) {
+    write(`${String(offsets[i]).padStart(10, "0")} 00000 n \n`);
+  }
+
+  write("trailer\n");
+  write(`<< /Size ${totalObjects + 1} /Root 1 0 R >>\n`);
+  write("startxref\n");
+  write(`${xrefPos}\n`);
+  write("%%EOF\n");
+
+  return new Blob(parts, { type: "application/pdf" });
+}
+
+async function deflateBytes(data) {
+  const stream = new Blob([data]).stream().pipeThrough(new CompressionStream("deflate"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }

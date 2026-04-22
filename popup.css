@@ -48,10 +48,53 @@ h1 {
 }
 
 .intro {
-  margin: 12px 0 18px;
+  margin: 12px 0 14px;
   font-size: 13px;
   line-height: 1.5;
   color: var(--muted);
+}
+
+.format-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.format-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.format-options {
+  display: flex;
+  gap: 6px;
+}
+
+.format-btn {
+  padding: 6px 16px;
+  border: 1.5px solid var(--panel-border);
+  border-radius: 10px;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.format-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.format-btn.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #f3f7f6;
 }
 
 .capture-button {

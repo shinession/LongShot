@@ -18,7 +18,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  activeCapture = captureFullPage(message.tabId)
+  activeCapture = captureFullPage(message.tabId, message.format || "png")
     .then((result) => {
       sendResponse(result);
     })
@@ -34,7 +34,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-async function captureFullPage(tabId) {
+async function captureFullPage(tabId, format) {
   const tab = await chrome.tabs.get(tabId);
 
   if (isRestrictedUrl(tab.url)) {
@@ -95,8 +95,9 @@ async function captureFullPage(tabId) {
 
   await notifyPopup({ type: "capture-progress", text: "Stitching frames..." });
 
-  const filename = createFileName(tab.title);
-  const result = await stitchAndDownload({ captures, metrics });
+  const ext = format === "pdf" ? "pdf" : "png";
+  const filename = createFileName(tab.title, ext);
+  const result = await stitchAndDownload({ captures, metrics, format });
 
   await notifyPopup({ type: "capture-progress", text: "Downloading image..." });
 
@@ -197,7 +198,7 @@ async function notifyPopup(message) {
   }
 }
 
-function createFileName(title) {
+function createFileName(title, ext = "png") {
   const safeTitle = (title || "page")
     .trim()
     .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "-")
@@ -205,7 +206,7 @@ function createFileName(title) {
     .slice(0, 80);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `longshot-${safeTitle || "page"}-${stamp}.png`;
+  return `longshot-${safeTitle || "page"}-${stamp}.${ext}`;
 }
 
 function readPageMetrics() {

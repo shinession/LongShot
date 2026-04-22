@@ -1,7 +1,18 @@
 const captureButton = document.getElementById("captureButton");
 const statusElement = document.getElementById("status");
+const formatButtons = document.querySelectorAll(".format-btn");
 
 let isRunning = false;
+let selectedFormat = "png";
+
+formatButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (isRunning) return;
+    formatButtons.forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    selectedFormat = btn.dataset.format;
+  });
+});
 
 function setStatus(message) {
   statusElement.textContent = message;
@@ -38,6 +49,7 @@ captureButton.addEventListener("click", async () => {
     const result = await chrome.runtime.sendMessage({
       type: "capture-full-page",
       tabId: tab.id,
+      format: selectedFormat,
     });
 
     setStatus(result?.message || "Capture completed.");
