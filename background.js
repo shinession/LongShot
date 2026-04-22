@@ -275,6 +275,20 @@ function preparePageForCapture() {
       [${MARK_ATTR}="true"] {
         visibility: hidden !important;
       }
+
+      html,
+      body,
+      * {
+        scrollbar-width: none !important;
+      }
+
+      html::-webkit-scrollbar,
+      body::-webkit-scrollbar,
+      *::-webkit-scrollbar {
+        width: 0 !important;
+        height: 0 !important;
+        display: none !important;
+      }
     `;
     document.head.appendChild(style);
   }
