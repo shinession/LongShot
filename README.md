@@ -4,6 +4,12 @@ This folder contains a Chrome extension that can:
 
 - capture a page by scrolling through the viewport
 - stitch all captured frames into one long PNG image
+- export PDF in single-page or multi-page mode
+- optionally disable page JavaScript during capture for unstable scrolling pages
+
+## UI Preview
+
+![Longshot Capture popup UI](UI.jpg)
 
 ## Load the extension
 
